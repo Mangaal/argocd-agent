@@ -121,7 +121,7 @@ enableWebSocket: false
 # -- Whether to enable gRPC compression.
 enableCompression: false
 # -- Port for pprof server (0 disables pprof).
-pprofPort: 0
+pprofPort: "0"
 # -- Whether to enable resource proxy.
 enableResourceProxy: true
 # -- Cache refresh interval.
@@ -129,23 +129,11 @@ cacheRefreshInterval: "10s"
 # -- Keep-alive interval for connections.
 keepAliveInterval: "50s"
 # -- Path to the TLS client key.
-tlsClientKeyPath: "/app/config/tls/tls.key"
+tlsClientKeyPath: ""
 # -- Path to the TLS client certificate.
-tlsClientCertPath: "/app/config/tls/tls.crt"
+tlsClientCertPath: ""
 # -- Path to the TLS root CA certificate.
-tlsRootCAPath: "/app/config/tls/ca.crt"
-
-networkPolicy:
-  enabled: true 
-  redis:
-    enabled: true 
-    name: allow-agent-to-redis
-    namespace: "" 
-    redisSelector:
-      app.kubernetes.io/name: argocd-redis
-    agentSelector:
-      app.kubernetes.io/name: argocd-agent-agent
-
+tlsRootCAPath: ""
 
 ## @section Services
 # -- Service configuration for metrics and healthz endpoints.
@@ -166,10 +154,10 @@ service:
     annotations: {}
 
 ## @section Tests
-# -- Configuration for chart tests.
+# -- Configuration for helm-chart tests.
 tests:
-  # -- Enable chart tests.
-  enabled: "true"
+  # -- By default, chart tests are disabled.
+  enabled: false
   # -- Test image.
   image: bitnamilegacy/kubectl
   # -- Test image tag.

@@ -555,7 +555,7 @@ func (s *Server) processIncomingResourceResyncEvent(ctx context.Context, agentNa
 		return fmt.Errorf("queue not found for agent: %s", agentName)
 	}
 
-	resyncHandler := resync.NewRequestHandler(dynClient, sendQ, s.events, s.resources.Get(agentName), logCtx, manager.ManagerRolePrincipal)
+	resyncHandler := resync.NewRequestHandler(dynClient, sendQ, s.events, s.resources.Get(agentName), logCtx, manager.ManagerRolePrincipal, s.namespace)
 
 	switch ev.Type() {
 	case event.SyncedResourceList.String():
@@ -591,6 +591,17 @@ func (s *Server) processIncomingResourceResyncEvent(ctx context.Context, agentNa
 		incoming := &event.RequestUpdate{}
 		if err := ev.DataAs(incoming); err != nil {
 			return err
+		}
+
+		// For autonomous agents, the agent sends RequestUpdate with the local AppProject name (e.g., "sample"),
+		// but the principal stores it with a prefixed name (e.g., "agent-autonomous-sample").
+		// We need to add the prefix before looking it up locally.
+		if agentMode == types.AgentModeAutonomous && incoming.Kind == "AppProject" {
+			prefixedName, err := agentPrefixedProjectName(incoming.Name, agentName)
+			if err != nil {
+				return fmt.Errorf("could not prefix project name: %w", err)
+			}
+			incoming.Name = prefixedName
 		}
 
 		return resyncHandler.ProcessRequestUpdateEvent(ctx, agentName, incoming)

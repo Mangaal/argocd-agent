@@ -53,9 +53,11 @@ type RequestHandler struct {
 	log *logrus.Entry
 
 	role manager.ManagerRole
+
+	namespace string
 }
 
-func NewRequestHandler(dynClient dynamic.Interface, queue workqueue.TypedRateLimitingInterface[*cloudevent.Event], events *event.EventSource, resources *resources.Resources, log *logrus.Entry, role manager.ManagerRole) *RequestHandler {
+func NewRequestHandler(dynClient dynamic.Interface, queue workqueue.TypedRateLimitingInterface[*cloudevent.Event], events *event.EventSource, resources *resources.Resources, log *logrus.Entry, role manager.ManagerRole, namespace string) *RequestHandler {
 	return &RequestHandler{
 		dynClient: dynClient,
 		sendQ:     queue,
@@ -63,6 +65,7 @@ func NewRequestHandler(dynClient dynamic.Interface, queue workqueue.TypedRateLim
 		log:       log,
 		resources: resources,
 		role:      role,
+		namespace: namespace,
 	}
 }
 
@@ -153,6 +156,7 @@ func (r *RequestHandler) ProcessIncomingResourceResyncRequest(ctx context.Contex
 			r.log.Errorf("failed to send request update for resource %s: %v", resource.Name, err)
 			continue
 		}
+		r.log.WithField(logfields.Kind, resource.Kind).WithField(logfields.Name, resource.Name).Trace("Sent a request update event")
 	}
 
 	return nil
@@ -210,10 +214,20 @@ func (r *RequestHandler) ProcessRequestUpdateEvent(ctx context.Context, agentNam
 	}
 
 	// Depending on the role, the namespace of the resource may be different.
-	// For AppProject/Repository, the namespace is always the agent's namespace.
-	namespace := reqUpdate.Namespace
-	if r.role == manager.ManagerRolePrincipal && reqUpdate.Kind == "Application" {
-		namespace = agentName
+	namespace := r.namespace
+	switch reqUpdate.Kind {
+	case "AppProject", "Repository":
+		// AppProjects and Repositories always live in the Argo CD namespace
+		// regardless of whether this is principal or agent
+		namespace = r.namespace
+	case "Application":
+		if r.role == manager.ManagerRolePrincipal {
+			// Applications on the principal are in the agent's namespace (e.g., agent-managed, agent-autonomous)
+			namespace = agentName
+		} else {
+			// Applications on autonomous agents live in the agent's Argo CD namespace
+			namespace = r.namespace
+		}
 	}
 
 	// Check if the given resource exists locally

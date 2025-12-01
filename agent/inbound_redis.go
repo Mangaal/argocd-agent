@@ -27,6 +27,7 @@ import (
 	"github.com/argoproj-labs/argocd-agent/internal/logging/logfields"
 	rediscache "github.com/go-redis/cache/v9"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/sirupsen/logrus"
 )
 
@@ -180,6 +181,7 @@ func (a *Agent) handleRedisSubscribeMessage(logCtx *logrus.Entry, rreq *event.Re
 // - This function will also close local redis connections for principal connections that are no longer active (based on pings received)
 func (a *Agent) forwardRedisSubscribeNotificationsToPrincipal(pubsub *redis.PubSub, rreq *event.RedisRequest, channelName string, logCtx *logrus.Entry) {
 	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
 
 	ch := pubsub.Channel()
 
@@ -340,6 +342,9 @@ func (a *Agent) getRedisClientAndCache() (*redis.Client, *rediscache.Cache, erro
 		MaxRetries: 3,
 		TLSConfig:  tlsConfig,
 		Username:   a.redisProxyMsgHandler.redisUsername,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
 	}
 
 	client := redis.NewClient(opts)
