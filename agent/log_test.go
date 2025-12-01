@@ -87,7 +87,10 @@ func (m *MockLogStreamClient) CloseAndRecv() (*logstreamapi.LogStreamResponse, e
 	// Simulate closing and receiving a response
 	m.mu.RLock()
 	linesReceived := len(m.sentData)
-	requestUUID := m.sentData[0].RequestUuid
+	requestUUID := m.requestID
+	if linesReceived > 0 && m.sentData[0] != nil && m.sentData[0].RequestUuid != "" {
+		requestUUID = m.sentData[0].RequestUuid
+	}
 	m.mu.RUnlock()
 	return &logstreamapi.LogStreamResponse{
 		RequestUuid:   requestUUID,
