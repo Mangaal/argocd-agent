@@ -61,15 +61,15 @@ func (a *Agent) processIncomingContainerLogRequest(ev *event.Event) error {
 func (a *Agent) startLogStreamIfNew(logReq *event.ContainerLogRequest, logCtx *logrus.Entry) error {
 	a.inflightMu.Lock()
 	if a.inflightLogs == nil {
-		a.inflightLogs = make(map[string]context.CancelFunc)
+		a.inflightLogs = make(map[string]struct{})
 	}
 	if _, dup := a.inflightLogs[logReq.UUID]; dup {
 		a.inflightMu.Unlock()
-		logCtx.WithField("request_uuid", logReq.UUID).Warn("duplicate log request; already streaming")
+		logCtx.Warn("duplicate log request; already streaming")
 		return nil
 	}
 	ctx, cancel := context.WithCancel(a.context)
-	a.inflightLogs[logReq.UUID] = cancel
+	a.inflightLogs[logReq.UUID] = struct{}{}
 	a.inflightMu.Unlock()
 
 	cleanup := func() {
@@ -79,13 +79,7 @@ func (a *Agent) startLogStreamIfNew(logReq *event.ContainerLogRequest, logCtx *l
 		a.inflightMu.Unlock()
 	}
 
-	logCtx.WithFields(logrus.Fields{
-		"uuid":      logReq.UUID,
-		"namespace": logReq.Namespace,
-		"pod":       logReq.PodName,
-		"container": logReq.Container,
-		"follow":    logReq.Follow,
-	}).Info("Processing log request")
+	logCtx.Info("Processing log request")
 
 	if logReq.Follow {
 		// Handle live logs with early ACK
@@ -119,9 +113,6 @@ func (a *Agent) handleStaticLogs(ctx context.Context, logReq *event.ContainerLog
 		return err
 	}
 	err = a.streamLogsToCompletion(ctx, stream, rc, logReq, logCtx)
-	if _, cerr := stream.CloseAndRecv(); cerr != nil {
-		err = cerr
-	}
 	if err != nil {
 		// Stop immediately on intentional server stops or auth issues
 		switch status.Code(err) {
@@ -150,8 +141,7 @@ func (a *Agent) handleLiveStreaming(ctx context.Context, logReq *event.Container
 				logCtx.WithField("panic", r).Error("Panic in live log streaming")
 			}
 		}()
-		streamCtx := logCtx.WithField("mode", "live_streaming")
-		a.streamLogsWithResume(ctx, logReq, streamCtx)
+		a.streamLogsWithResume(ctx, logReq, logCtx)
 	}()
 	// Return success immediately - this sends the ACK to Principal
 	return nil
@@ -221,6 +211,9 @@ func (a *Agent) streamLogsToCompletion(
 				Data:        readBuf[:n],
 			}); sendErr != nil {
 				logCtx.WithError(sendErr).Warn("Send failed")
+				if _, closedErr := stream.CloseAndRecv(); closedErr != nil {
+					return closedErr
+				}
 				return sendErr
 			}
 		}
@@ -340,7 +333,7 @@ func (a *Agent) streamLogsWithResume(ctx context.Context, logReq *event.Containe
 }
 
 // streamLogs streams logs until the context is done, returning the last seen timestamp.
-// It flushes raw data, using chunk size (64KB) or time-based flushing.
+// It flushes raw data, using chunk size 64KB
 // Timestamps are extracted from raw lines for retry capability.
 // If an error occurs during send, it attempts to close the stream and propagate
 // the appropriate error back to the caller for retry or termination.
@@ -348,6 +341,7 @@ func (a *Agent) streamLogs(ctx context.Context, stream logstreamapi.LogStreamSer
 	const chunkMax = 64 * 1024 // 64KB chunks
 	var lastTimestamp *time.Time
 	readBuf := make([]byte, chunkMax)
+	defer rc.Close()
 
 	for {
 		select {
@@ -385,6 +379,7 @@ func (a *Agent) streamLogs(ctx context.Context, stream logstreamapi.LogStreamSer
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				logCtx.WithError(err).Info("Log stream ended")
 				_ = stream.Send(&logstreamapi.LogStreamData{RequestUuid: logReq.UUID, Eof: true})
 				return lastTimestamp, nil
 			}

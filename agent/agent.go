@@ -105,8 +105,9 @@ type Agent struct {
 	cacheRefreshInterval time.Duration
 	clusterCache         *appstatecache.Cache
 
-	inflightMu   sync.Mutex
-	inflightLogs map[string]context.CancelFunc
+	inflightMu sync.Mutex
+	// inflightLogs blocks starting a duplicate stream for the same request UUID (esp. follow=true).
+	inflightLogs map[string]struct{}
 	// sourceCache is a cache of resources from the source. We use it to revert any changes made to the local resources.
 	sourceCache *cache.SourceCache
 
@@ -141,7 +142,7 @@ func NewAgent(ctx context.Context, client *kube.KubernetesClient, namespace stri
 		version:      version.New("argocd-agent"),
 		deletions:    manager.NewDeletionTracker(),
 		sourceCache:  cache.NewSourceCache(),
-		inflightLogs: make(map[string]context.CancelFunc),
+		inflightLogs: make(map[string]struct{}),
 	}
 	a.infStopCh = make(chan struct{})
 	a.namespace = namespace

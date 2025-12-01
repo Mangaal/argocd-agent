@@ -132,7 +132,7 @@ func createTestAgent() *Agent {
 	agent := &Agent{
 		context:      ctx,
 		cancelFn:     cancel,
-		inflightLogs: make(map[string]context.CancelFunc),
+		inflightLogs: make(map[string]struct{}),
 		inflightMu:   sync.Mutex{},
 	}
 	return agent
@@ -145,7 +145,7 @@ func createTestAgentWithKubeClient() *Agent {
 		context:      ctx,
 		cancelFn:     cancel,
 		kubeClient:   kubeClient,
-		inflightLogs: make(map[string]context.CancelFunc),
+		inflightLogs: make(map[string]struct{}),
 		inflightMu:   sync.Mutex{},
 	}
 	return agent
@@ -265,7 +265,7 @@ func TestStartLogStreamIfNew(t *testing.T) {
 		agent := createTestAgent()
 		// Add a duplicate request
 		agent.inflightMu.Lock()
-		agent.inflightLogs[logReq.UUID] = func() {}
+		agent.inflightLogs[logReq.UUID] = struct{}{}
 		agent.inflightMu.Unlock()
 
 		err := agent.startLogStreamIfNew(logReq, logCtx)
