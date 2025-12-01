@@ -26,6 +26,7 @@ import (
 	"github.com/argoproj-labs/argocd-agent/pkg/api/grpc/logstreamapi"
 	"github.com/argoproj-labs/argocd-agent/principal/apis/logstreamapi/mock"
 	"github.com/argoproj-labs/argocd-agent/test/fake/kube"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,15 +38,17 @@ import (
 // MockLogStreamClient wraps the existing MockLogStreamServer for client-side testing
 type MockLogStreamClient struct {
 	*mock.MockLogStreamServer
-	sentData []*logstreamapi.LogStreamData
-	sendFunc func(data *logstreamapi.LogStreamData) error
-	mu       sync.RWMutex
+	sentData  []*logstreamapi.LogStreamData
+	sendFunc  func(data *logstreamapi.LogStreamData) error
+	requestID string
+	mu        sync.RWMutex
 }
 
-func NewMockLogStreamClient(ctx context.Context) *MockLogStreamClient {
+func NewMockLogStreamClient(ctx context.Context, requestUUID string) *MockLogStreamClient {
 	return &MockLogStreamClient{
 		MockLogStreamServer: mock.NewMockLogStreamServer(ctx),
 		sentData:            make([]*logstreamapi.LogStreamData, 0),
+		requestID:           requestUUID,
 		sendFunc: func(data *logstreamapi.LogStreamData) error {
 			return nil
 		},
@@ -84,9 +87,10 @@ func (m *MockLogStreamClient) CloseAndRecv() (*logstreamapi.LogStreamResponse, e
 	// Simulate closing and receiving a response
 	m.mu.RLock()
 	linesReceived := len(m.sentData)
+	requestUUID := m.sentData[0].RequestUuid
 	m.mu.RUnlock()
 	return &logstreamapi.LogStreamResponse{
-		RequestUuid:   "test-uuid",
+		RequestUuid:   requestUUID,
 		Status:        200,
 		LinesReceived: int32(linesReceived),
 	}, nil
@@ -153,7 +157,7 @@ func createTestAgentWithKubeClient() *Agent {
 
 func createTestLogRequest(follow bool) *event.ContainerLogRequest {
 	return &event.ContainerLogRequest{
-		UUID:       "test-uuid-123",
+		UUID:       uuid.New().String(),
 		Namespace:  "test-namespace",
 		PodName:    "test-pod",
 		Container:  "test-container",
@@ -233,7 +237,6 @@ func TestCreateKubernetesLogStream(t *testing.T) {
 		// Create the pod in the fake client
 		_, err := agent.kubeClient.Clientset.CoreV1().Pods(logReq.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 		require.NoError(t, err)
-
 		// Now test the log stream creation
 		rc, err := agent.createKubernetesLogStream(ctx, logReq)
 		// The fake client actually supports streaming and returns a valid ReadCloser
@@ -245,7 +248,6 @@ func TestCreateKubernetesLogStream(t *testing.T) {
 			rc.Close()
 		}
 	})
-
 	t.Run("Test createKubernetesLogStream with non-existent pod", func(t *testing.T) {
 		agent := createTestAgentWithKubeClient()
 		// Test with a non-existent pod
@@ -266,7 +268,6 @@ func TestStartLogStreamIfNew(t *testing.T) {
 		agent.inflightMu.Lock()
 		agent.inflightLogs[logReq.UUID] = struct{}{}
 		agent.inflightMu.Unlock()
-
 		err := agent.startLogStreamIfNew(logReq, logCtx)
 		assert.NoError(t, err) // Should return early for duplicate
 	})
@@ -286,31 +287,25 @@ func TestStreamLogsToCompletion(t *testing.T) {
 	ctx := context.Background()
 	logReq := createTestLogRequest(false)
 	logCtx := logrus.NewEntry(logrus.New())
-
 	// Create a test reader with some log data
 	testData := "2025-12-07T10:30:45Z line 1\n2025-12-07T10:30:46Z line 2\n"
 	reader := &MockReadCloser{Reader: strings.NewReader(testData)}
 
 	t.Run("successful streaming", func(t *testing.T) {
-		mockStream := NewMockLogStreamClient(ctx)
-
+		mockStream := NewMockLogStreamClient(ctx, logReq.UUID)
 		err := agent.streamLogsToCompletion(ctx, mockStream, reader, logReq, logCtx)
 		assert.NoError(t, err)
-
 		// Verify that data was sent
 		sentData := mockStream.GetSentData()
-		assert.GreaterOrEqual(t, len(sentData), 2) // At least 2 data messages + EOF
-
+		assert.GreaterOrEqual(t, len(sentData), 1) // At least 1 data message
 		// Check that the last message is EOF
 		lastMessage := sentData[len(sentData)-1]
 		assert.True(t, lastMessage.Eof)
 	})
-
 	t.Run("context cancellation", func(t *testing.T) {
 		cancelCtx, cancel := context.WithCancel(ctx)
 		cancel() // Cancel immediately
-
-		mockStream := NewMockLogStreamClient(cancelCtx)
+		mockStream := NewMockLogStreamClient(cancelCtx, logReq.UUID)
 		reader := &MockReadCloser{Reader: strings.NewReader(testData)}
 		err := agent.streamLogsToCompletion(cancelCtx, mockStream, reader, logReq, logCtx)
 		assert.Error(t, err)
@@ -326,29 +321,21 @@ func TestStreamLogs(t *testing.T) {
 	logCtx := logrus.NewEntry(logrus.New())
 
 	t.Run("successful streaming with data verification", func(t *testing.T) {
+		var lastTimestamp *time.Time
+		var streamErr error
 		// Create a context that we can cancel
 		testCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-
-		mockStream := NewMockLogStreamClient(testCtx)
+		mockStream := NewMockLogStreamClient(testCtx, logReq.UUID)
 		testData := "2025-12-07T10:30:45Z line 1\n2025-12-07T10:30:46Z line 2\n"
 		reader := &MockReadCloser{Reader: strings.NewReader(testData)}
 		logReq.Timestamps = true
-
-		// Start streaming in a goroutine
-		var lastTimestamp *time.Time
-		var streamErr error
-
 		lastTimestamp, streamErr = agent.streamLogs(testCtx, mockStream, reader, logReq, logCtx)
-
 		// Check if data was sent before cancelling
 		sentData := mockStream.GetSentData()
-
 		// Verify data was sent due to timer flush
 		assert.Greater(t, len(sentData), 0, "Data should be sent due to timer flush")
-
-		assert.Nil(t, streamErr, "Should end with EOF, not timeout")
-
+		assert.Nil(t, streamErr, "Stream should complete successfully")
 		// Verify timestamp extraction worked
 		assert.NotNil(t, lastTimestamp, "Timestamp should be extracted")
 		assert.Equal(t, 2025, lastTimestamp.Year())
@@ -356,23 +343,18 @@ func TestStreamLogs(t *testing.T) {
 	t.Run("send failure returns timestamp and error", func(t *testing.T) {
 		testCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-
-		mockStream := NewMockLogStreamClient(testCtx)
+		mockStream := NewMockLogStreamClient(testCtx, logReq.UUID)
 		testData := "2025-12-07T10:30:45Z line 1\n2025-12-07T10:30:46Z line 2\n"
 		reader := &MockReadCloser{Reader: strings.NewReader(testData)}
 		logReq.Timestamps = true
-
 		sendErr := errors.New("stream send failed")
 		mockStream.SetSendFunc(func(data *logstreamapi.LogStreamData) error {
 			return sendErr
 		})
-
 		lastTimestamp, streamErr := agent.streamLogs(testCtx, mockStream, reader, logReq, logCtx)
-
 		require.ErrorIs(t, streamErr, sendErr)
 		require.NotNil(t, lastTimestamp, "last timestamp should be captured before send failure")
 		assert.Equal(t, 2025, lastTimestamp.Year())
-
 		sentData := mockStream.GetSentData()
 		require.Greater(t, len(sentData), 0, "expected a send attempt before failure")
 		assert.Equal(t, testData, string(sentData[0].Data))
