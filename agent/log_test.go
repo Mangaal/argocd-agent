@@ -259,7 +259,6 @@ func TestCreateKubernetesLogStream(t *testing.T) {
 // Test startLogStreamIfNew
 func TestStartLogStreamIfNew(t *testing.T) {
 	logCtx := logrus.NewEntry(logrus.New())
-
 	t.Run("duplicate request", func(t *testing.T) {
 		logReq := createTestLogRequest(false)
 		agent := createTestAgent()
@@ -271,7 +270,6 @@ func TestStartLogStreamIfNew(t *testing.T) {
 		err := agent.startLogStreamIfNew(logReq, logCtx)
 		assert.NoError(t, err) // Should return early for duplicate
 	})
-
 	t.Run("new request", func(t *testing.T) {
 		logReq := createTestLogRequest(false)
 		agent := createTestAgent()
@@ -279,7 +277,6 @@ func TestStartLogStreamIfNew(t *testing.T) {
 		assert.Panics(t, func() {
 			agent.startLogStreamIfNew(logReq, logCtx)
 		})
-
 	})
 }
 
